@@ -29,7 +29,7 @@ jobs:
 
       - name: Build EXE (PyInstaller)
         run: |
-          pyinstaller main_gui.py --noconfirm --clean --onefile --windowed --icon "app.ico" --collect-all curl_cffi --collect-all vtt_to_srt --name "IdlixDownloaderGUI"
+          pyinstaller main_gui.py --noconfirm --clean --onefile --windowed --icon "app.ico" --collect-all curl_cffi --collect-all vtt_to_srt --collect-all Cryptodome --name "IdlixDownloaderGUI"
 
       - name: Prepare Release Artifact
         shell: bash
