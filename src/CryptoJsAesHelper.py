@@ -9,7 +9,10 @@ import os
 import json
 import base64
 import hashlib
-from Crypto.Cipher import AES
+try:
+    from Cryptodome.Cipher import AES
+except ImportError:
+    from Crypto.Cipher import AES
 
 
 class CryptoJsAes:
