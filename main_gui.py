@@ -313,11 +313,15 @@ class IdlixGUI:
 
             # DOWNLOAD
             else:
+                logger.info("Starting download with subtitles...")
                 result = idlix.download_m3u8()
                 if result.get("status"):
-                    logger.success(f"Downloaded: {result['path']}")
+                    sub_info = " (with embedded subtitles)" if result.get("subtitles_muxed") else ""
+                    logger.success(f"Downloaded{sub_info}: {result['path']}")
+                    if result.get("subtitles"):
+                        logger.info(f"Subtitles saved alongside video ({len(result['subtitles'])} file(s))")
                 else:
-                    logger.error("Download failed.")
+                    logger.error(f"Download failed: {result.get('message')}")
 
         threading.Thread(target=task, daemon=True).start()
 

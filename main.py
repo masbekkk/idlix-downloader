@@ -75,13 +75,13 @@ def process_movie(idlix_helper, url: str, mode: str):
     else:
         logger.warning("This video has no variant playlist")
 
-    # 5. If play → download subtitle
+    # 5. If play → play with subtitle
     if mode == "play":
         subtitle = idlix_helper.get_subtitle()
         if subtitle.get("status"):
             logger.success("Subtitle downloaded")
         else:
-            logger.error("Subtitle unavailable")
+            logger.warning("Subtitle unavailable")
 
         logger.info(f"Playing {video_data['video_name']} ...")
 
@@ -94,11 +94,16 @@ def process_movie(idlix_helper, url: str, mode: str):
 
     # 6. If download
     else:
+        logger.info(f"Starting download for {video_data['video_name']} (with subtitles)...")
         result = idlix_helper.download_m3u8()
         if result.get("status"):
-            logger.success(f"Downloading {video_data['video_name']} success")
+            logger.success(f"Downloading {video_data['video_name']} success: {result['path']}")
+            if result.get("subtitles_muxed"):
+                logger.success("Subtitles successfully embedded into MP4 container (mov_text)")
+            if result.get("subtitles"):
+                logger.info(f"Saved {len(result['subtitles'])} external subtitle file(s) (.srt) matching movie name")
         else:
-            logger.error("Error downloading m3u8")
+            logger.error(f"Error downloading m3u8: {result.get('message')}")
 
 
 def show_featured_table(featured):

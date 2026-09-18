@@ -365,54 +365,237 @@ class IdlixHelper:
     def set_m3u8_url(self, m3u8_url: str):
         self.m3u8_url = m3u8_url
 
-    def get_subtitle(self, download=True):
-        """Downloads and converts WebVTT subtitle to SRT"""
+    @staticmethod
+    def get_iso_lang(lang: str) -> str:
+        """Map language code to ISO 639-2 3-letter code for FFmpeg metadata"""
+        lang = (lang or "").lower().strip()
+        mapping = {
+            "id": "ind", "ind": "ind", "in": "ind", "indonesia": "ind", "indonesian": "ind",
+            "en": "eng", "eng": "eng", "english": "eng",
+            "ja": "jpn", "jpn": "jpn", "japanese": "jpn",
+            "ko": "kor", "kor": "kor", "korean": "kor",
+            "zh": "zho", "chi": "zho", "chinese": "zho",
+            "es": "spa", "spa": "spa", "spanish": "spa",
+            "fr": "fra", "fre": "fra", "french": "fra",
+            "de": "deu", "ger": "deu", "german": "deu",
+            "ar": "ara", "ara": "ara", "arabic": "ara",
+            "th": "tha", "tha": "tha", "thai": "tha",
+            "vi": "vie", "vie": "vie", "vietnamese": "vie",
+            "ru": "rus", "rus": "rus", "russian": "rus",
+        }
+        return mapping.get(lang, lang[:3] if len(lang) >= 3 else "und")
+
+    @staticmethod
+    def get_lang_label(lang: str, fallback_label: str = None) -> str:
+        """Get friendly title label for subtitle track"""
+        if fallback_label and fallback_label.strip():
+            return fallback_label.strip()
+        labels = {
+            "id": "Indonesian", "ind": "Indonesian", "in": "Indonesian",
+            "en": "English", "eng": "English",
+            "ja": "Japanese", "jpn": "Japanese",
+            "ko": "Korean", "kor": "Korean",
+            "zh": "Chinese", "zho": "Chinese",
+            "es": "Spanish", "spa": "Spanish",
+            "fr": "French", "fra": "French",
+            "de": "German", "deu": "German",
+        }
+        return labels.get((lang or "").lower().strip(), (lang or "Subtitle").capitalize())
+
+    @staticmethod
+    def convert_vtt_to_srt(vtt_file: str, target_srt: str = None) -> str:
+        """Converts WebVTT file to standard compliant SRT format without header corruption"""
+        output_srt = target_srt or (vtt_file.rsplit('.', 1)[0] + '.srt')
         try:
-            if not self.subtitles_list:
-                self.is_subtitle = False
-                return {'status': False, 'message': 'Subtitle not available'}
+            with open(vtt_file, 'r', encoding='utf-8', errors='ignore') as vf:
+                vtt_text = vf.read()
 
-            # Prefer Indonesian, fallback to first available
-            sub_entry = next(
-                (s for s in self.subtitles_list if s.get('lang') in ['id', 'ind']),
-                self.subtitles_list[0]
+            # 1. Normalize line endings and strip BOM
+            text = vtt_text.lstrip('\ufeff').replace('\r\n', '\n').replace('\r', '\n')
+
+            # 2. Strip WEBVTT header and comments/metadata before the first cue
+            lines = text.split('\n')
+            cue_lines = []
+            in_header = True
+            for line in lines:
+                stripped = line.strip()
+                if in_header:
+                    if re.match(r'^(WEBVTT|NOTE|STYLE|REGION|Kind:|Language:)', stripped, re.IGNORECASE):
+                        continue
+                    if '-->' in stripped:
+                        in_header = False
+                        cue_lines.append(line)
+                    continue
+                cue_lines.append(line)
+
+            content = '\n'.join(cue_lines)
+
+            # 3. Standardize timestamps to HH:MM:SS,mmm --> HH:MM:SS,mmm
+            def fix_timestamp(match):
+                h1 = match.group(1) or '00:'
+                m1 = match.group(2)
+                s1 = match.group(3)
+                ms1 = match.group(4)
+                h2 = match.group(5) or '00:'
+                m2 = match.group(6)
+                s2 = match.group(7)
+                ms2 = match.group(8)
+                if len(h1) == 2 and not h1.endswith(':'):
+                    h1 += ':'
+                if len(h2) == 2 and not h2.endswith(':'):
+                    h2 += ':'
+                return f'{h1}{m1}:{s1},{ms1} --> {h2}{m2}:{s2},{ms2}'
+
+            ts_pattern = re.compile(
+                r'(?:(\d{2}:))?(\d{2}):(\d{2})[\.,](\d{3})\s*-->\s*(?:(\d{2}:))?(\d{2}):(\d{2})[\.,](\d{3})'
             )
-            sub_url = sub_entry.get('path')
-            if not sub_url:
-                self.is_subtitle = False
-                return {'status': False, 'message': 'Subtitle URL missing'}
+            content = ts_pattern.sub(fix_timestamp, content)
 
-            if download:
-                sub_res = requests.get(
-                    sub_url,
-                    headers={"Referer": "https://z2.idlixku.com/", "Origin": "https://z2.idlixku.com"},
-                    timeout=10
-                )
-                base_name = re.sub(r'\s+', '_', self.video_name)
-                vtt_path = f"{base_name}.vtt"
-                with open(vtt_path, 'wb') as sf:
-                    sf.write(sub_res.content)
+            # 4. Split blocks and ensure strictly valid numbered cues
+            blocks = re.split(r'\n\s*\n', content.strip())
+            cues = []
+            cue_num = 1
+            for block in blocks:
+                blines = [l.strip() for l in block.split('\n') if l.strip()]
+                if not blines:
+                    continue
+                ts_idx = -1
+                for idx, l in enumerate(blines):
+                    if '-->' in l and re.search(r'\d{2}:\d{2}:\d{2},\d{3}\s*-->\s*\d{2}:\d{2}:\d{2},\d{3}', l):
+                        ts_idx = idx
+                        break
+                if ts_idx == -1:
+                    continue
 
-                self.convert_vtt_to_srt(vtt_path)
-                self.is_subtitle = True
-                srt_path = f"{base_name}.srt"
-                return {
-                    'status': True,
-                    'subtitle': srt_path
-                }
+                ts_match = re.search(r'\d{2}:\d{2}:\d{2},\d{3}\s*-->\s*\d{2}:\d{2}:\d{2},\d{3}', blines[ts_idx])
+                ts_line = ts_match.group(0)
+                text_lines = blines[ts_idx + 1:]
+                if not text_lines:
+                    continue
 
-            self.is_subtitle = True
-            return {
-                'status': True,
-                'subtitle': sub_url
-            }
+                cues.append(f"{cue_num}\n{ts_line}\n" + "\n".join(text_lines))
+                cue_num += 1
 
-        except Exception as error_subtitle:
+            final_srt = "\n\n".join(cues) + "\n"
+            with open(output_srt, 'w', encoding='utf-8') as sf:
+                sf.write(final_srt)
+
+            return output_srt
+        except Exception as err:
+            logger.error(f"Failed converting VTT to SRT: {err}")
+            return None
+
+    def get_subtitles(self, download=True, output_dir=None):
+        """
+        Downloads all available subtitles, converts to SRT,
+        and saves them alongside the movie file.
+        """
+        if not self.subtitles_list:
             self.is_subtitle = False
-            return {'status': False, 'message': str(error_subtitle)}
+            return []
 
-    def download_m3u8(self):
-        """Downloads all HLS segments multithreaded and stitches into MP4 using FFmpeg"""
+        out_dir = output_dir or os.getcwd()
+        os.makedirs(out_dir, exist_ok=True)
+        clean_name = self.video_name.strip()
+
+        downloaded = []
+
+        for idx, sub_entry in enumerate(self.subtitles_list):
+            sub_url = sub_entry.get("path")
+            if not sub_url:
+                continue
+
+            lang_raw = sub_entry.get("lang") or sub_entry.get("language") or f"sub{idx+1}"
+            iso_lang = self.get_iso_lang(lang_raw)
+            label = self.get_lang_label(lang_raw, sub_entry.get("label"))
+
+            if not download:
+                downloaded.append({
+                    "lang": lang_raw,
+                    "iso_lang": iso_lang,
+                    "label": label,
+                    "url": sub_url,
+                    "srt_path": None
+                })
+                continue
+
+            try:
+                sub_res = None
+                try:
+                    sub_res = self.request.get(
+                        sub_url,
+                        headers={"Referer": "https://z2.idlixku.com/", "Origin": "https://z2.idlixku.com"},
+                        timeout=12
+                    )
+                except Exception:
+                    pass
+
+                if not sub_res or sub_res.status_code != 200 or not sub_res.content:
+                    sub_res = requests.get(
+                        sub_url,
+                        headers={"Referer": "https://z2.idlixku.com/", "Origin": "https://z2.idlixku.com"},
+                        timeout=12
+                    )
+
+                if not sub_res or sub_res.status_code != 200 or not sub_res.content:
+                    logger.warning(f"Failed downloading subtitle from {sub_url}")
+                    continue
+
+                temp_vtt = os.path.join(out_dir, f"{clean_name}.{iso_lang}.tmp_{int(time.time())}_{idx}.vtt")
+                with open(temp_vtt, "wb") as vf:
+                    vf.write(sub_res.content)
+
+                canonical_srt = os.path.join(out_dir, f"{clean_name}.{iso_lang}.srt")
+                res_srt = self.convert_vtt_to_srt(temp_vtt, canonical_srt)
+
+                if os.path.exists(temp_vtt):
+                    try:
+                        os.remove(temp_vtt)
+                    except Exception:
+                        pass
+
+                if res_srt and os.path.exists(canonical_srt):
+                    default_srt = os.path.join(out_dir, f"{clean_name}.srt")
+                    if iso_lang == "ind" or not os.path.exists(default_srt):
+                        try:
+                            shutil.copyfile(canonical_srt, default_srt)
+                        except Exception:
+                            pass
+
+                    downloaded.append({
+                        "lang": lang_raw,
+                        "iso_lang": iso_lang,
+                        "label": label,
+                        "url": sub_url,
+                        "srt_path": canonical_srt
+                    })
+                    logger.info(f"Subtitle ready [{label}]: {os.path.basename(canonical_srt)}")
+
+            except Exception as e:
+                logger.warning(f"Error processing subtitle {lang_raw}: {e}")
+                continue
+
+        if downloaded:
+            self.is_subtitle = True
+        return downloaded
+
+    def get_subtitle(self, download=True):
+        """Downloads primary subtitle (preferring Indonesian) for backward compatibility"""
+        subs = self.get_subtitles(download=download)
+        if not subs:
+            self.is_subtitle = False
+            return {'status': False, 'message': 'Subtitle not available'}
+
+        primary = next((s for s in subs if s.get('iso_lang') == 'ind'), subs[0])
+        self.is_subtitle = True
+        return {
+            'status': True,
+            'subtitle': primary['srt_path'] if download else primary.get('url'),
+            'subtitles': subs
+        }
+
+    def download_m3u8(self, output_dir=None):
+        """Downloads all HLS segments multithreaded and stitches into MP4 with embedded & sidecar subtitles using FFmpeg"""
         try:
             if not self.m3u8_url:
                 return {'status': False, 'message': 'M3U8 URL is required'}
@@ -490,27 +673,67 @@ class IdlixHelper:
                     if os.path.exists(os.path.join(tmp_dir, seg_name)):
                         mf.write(f"file '{seg_name}'\n")
 
-            # 5. FFmpeg concat to MP4
+            # 5. Handle Subtitles (sidecar and embedded)
+            out_dir = output_dir or os.getcwd()
+            os.makedirs(out_dir, exist_ok=True)
             output_filename = f"{self.video_name}.mp4"
-            output_path = os.path.join(os.getcwd(), output_filename)
+            output_path = os.path.join(out_dir, output_filename)
+
+            logger.info("Checking and preparing subtitles...")
+            subs = self.get_subtitles(download=True, output_dir=out_dir)
+
+            # 6. FFmpeg concat and mux to MP4
             logger.info(f"Merging segments into {output_filename} via FFmpeg...")
 
-            cmd = [
-                "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-                "-i", manifest_path,
-                "-c", "copy",
-                output_path
-            ]
-            result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            mux_success = False
+            if subs:
+                cmd = [
+                    "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                    "-i", manifest_path
+                ]
+                for sub in subs:
+                    cmd += ["-i", sub["srt_path"]]
+
+                cmd += ["-map", "0:v", "-map", "0:a?"]
+                for i in range(len(subs)):
+                    cmd += ["-map", f"{i + 1}:0"]
+
+                cmd += ["-c:v", "copy", "-c:a", "copy", "-c:s", "mov_text"]
+
+                for i, sub in enumerate(subs):
+                    cmd += [
+                        f"-metadata:s:s:{i}", f"language={sub['iso_lang']}",
+                        f"-metadata:s:s:{i}", f"title={sub['label']}"
+                    ]
+                cmd.append(output_path)
+
+                result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                    mux_success = True
+                    logger.success(f"Successfully embedded {len(subs)} subtitle track(s) into {output_filename}")
+                else:
+                    logger.warning("FFmpeg subtitle muxing failed, falling back to clean video concat...")
+
+            if not mux_success:
+                cmd_fallback = [
+                    "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                    "-i", manifest_path,
+                    "-c", "copy",
+                    output_path
+                ]
+                result = subprocess.run(cmd_fallback, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
-            if result.returncode == 0 and os.path.exists(output_path):
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                 file_size_mb = round(os.path.getsize(output_path) / (1024 * 1024), 2)
                 logger.success(f"Download complete: {output_filename} ({file_size_mb} MB)")
                 return {
                     'status': True,
                     'message': 'Download success',
-                    'path': output_path
+                    'path': output_path,
+                    'subtitles': subs,
+                    'subtitles_muxed': mux_success
                 }
             else:
                 return {
@@ -538,24 +761,14 @@ class IdlixHelper:
                 "-loglevel", "panic"
             ]
 
-            subtitle_path = f"{self.video_name.replace(' ', '_')}.srt"
-            if self.is_subtitle and os.path.exists(subtitle_path):
+            sub_info = self.get_subtitle(download=True)
+            subtitle_path = sub_info.get("subtitle") if sub_info.get("status") else None
+
+            if subtitle_path and os.path.exists(subtitle_path):
                 args += ["-vf", f"subtitles={subtitle_path}"]
 
             subprocess.call(args)
 
-            if self.is_subtitle:
-                if os.path.exists(subtitle_path):
-                    os.remove(subtitle_path)
-                vtt_path = f"{self.video_name.replace(' ', '_')}.vtt"
-                if os.path.exists(vtt_path):
-                    os.remove(vtt_path)
-
             return {'status': True, 'message': 'Playback finished'}
         except Exception as error_play:
             return {'status': False, 'message': str(error_play)}
-
-    @staticmethod
-    def convert_vtt_to_srt(vtt_file):
-        convert_file = ConvertFile(vtt_file, "utf-8")
-        convert_file.convert()
