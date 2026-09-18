@@ -211,6 +211,29 @@ class IdlixGUI:
 
         return result["res"]
 
+    def ask_selection(self, title: str, prompt: str, choices: list) -> str:
+        popup = tk.Toplevel(self.root)
+        popup.title(title)
+        popup.geometry("420x180")
+        popup.resizable(False, False)
+
+        ttk.Label(popup, text=prompt, font=("Arial", 11, "bold")).pack(pady=10)
+
+        combo = ttk.Combobox(popup, values=choices, state="readonly", width=45)
+        combo.current(0)
+        combo.pack(pady=10)
+
+        result = {"val": choices[0]}
+
+        def choose():
+            result["val"] = combo.get()
+            popup.destroy()
+
+        ttk.Button(popup, text="Select", command=choose).pack(pady=8)
+        popup.grab_set()
+        self.root.wait_window(popup)
+        return result["val"]
+
     # ============================================================
     # REFRESH FEATURED LIST
     # ============================================================
@@ -234,12 +257,12 @@ class IdlixGUI:
     # URL BUTTON ACTIONS
     # ============================================================
     def download_by_url(self):
-        url = simpledialog.askstring("Download Movie", "Enter movie URL:")
+        url = simpledialog.askstring("Download Media", "Enter Movie or Series Episode URL:")
         if url:
             self.process_movie(url.strip(), "download")
 
     def play_by_url(self):
-        url = simpledialog.askstring("Play Movie", "Enter movie URL:")
+        url = simpledialog.askstring("Play Media", "Enter Movie or Series Episode URL:")
         if url:
             self.process_movie(url.strip(), "play")
 
@@ -257,8 +280,63 @@ class IdlixGUI:
                 logger.error("Error getting video data")
                 return
 
+            # Handle TV series root URL (prompt for Season and Episode)
+            if video_data.get("is_series"):
+                seasons = video_data.get("seasons", [])
+                if not seasons:
+                    logger.error("No seasons found for this series.")
+                    return
+
+                season_choices = [
+                    f"Season {s.get('seasonNumber', i+1)}: {s.get('name', '')}"
+                    for i, s in enumerate(seasons)
+                ]
+
+                selected_season_str = None
+
+                def ask_s():
+                    nonlocal selected_season_str
+                    selected_season_str = self.ask_selection("Select Season", f"Choose Season for {video_data.get('series_title')}:", season_choices)
+
+                self.root.after(0, ask_s)
+                while selected_season_str is None:
+                    self.root.update()
+
+                s_idx = season_choices.index(selected_season_str)
+                season_num = seasons[s_idx].get("seasonNumber", s_idx + 1)
+
+                logger.info(f"Fetching episodes for Season {season_num}...")
+                eps_data = idlix.get_season_episodes(video_data["slug"], season_num)
+                episodes = eps_data.get("episodes", [])
+                if not episodes:
+                    logger.error(f"No episodes found for Season {season_num}")
+                    return
+
+                ep_choices = [
+                    f"Ep {e.get('episodeNumber')}: {e.get('name', 'Episode ' + str(e.get('episodeNumber')))}"
+                    for e in episodes
+                ]
+
+                selected_ep_str = None
+
+                def ask_e():
+                    nonlocal selected_ep_str
+                    selected_ep_str = self.ask_selection("Select Episode", f"Choose Episode (Season {season_num}):", ep_choices)
+
+                self.root.after(0, ask_e)
+                while selected_ep_str is None:
+                    self.root.update()
+
+                e_idx = ep_choices.index(selected_ep_str)
+                ep_num = episodes[e_idx].get("episodeNumber")
+
+                video_data = idlix.get_episode_data(video_data["slug"], season_num, ep_num)
+                if not video_data.get("status"):
+                    logger.error("Failed to load episode.")
+                    return
+
             logger.info(
-                f"Video ID: {video_data['video_id']} | Name: {video_data['video_name']}"
+                f"Media Ready | ID: {video_data['video_id']} | Title: {video_data['video_name']}"
             )
 
             # 2. embed URL

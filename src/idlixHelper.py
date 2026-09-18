@@ -43,6 +43,11 @@ class IdlixHelper:
         self.is_subtitle = False
         self.subtitles_list = []
         self.variant_playlist = None
+        self.media_type = "movie"
+        self.series_slug = None
+        self.season_number = None
+        self.episode_number = None
+        self.series_data = None
         self.request = cffi_requests.Session(
             impersonate=random.choice(["chrome124", "chrome119"]),
             headers=self.BASE_STATIC_HEADERS,
@@ -107,16 +112,43 @@ class IdlixHelper:
             print(f'Error: {e}')
 
     @staticmethod
-    def extract_slug(url: str) -> str:
+    def parse_url(url: str) -> dict:
+        """Parse IDLIX URL into media type (episode, series, movie) and identifiers"""
         clean = url.strip().rstrip('/')
-        if '/movie/' in clean:
-            return clean.split('/movie/')[-1].split('?')[0].split('/')[0]
-        elif '/series/' in clean:
-            return clean.split('/series/')[-1].split('?')[0].split('/')[0]
-        elif clean.startswith('http'):
-            path = urlparse(clean).path.strip('/').split('/')
-            return path[-1] if path else clean
-        return clean
+        # Match episode: /series/[slug]/season/[season]/episode/[episode]
+        ep_match = re.search(r'/series/([^/]+)/season/(\d+)/episode/(\d+)', clean, re.IGNORECASE)
+        if ep_match:
+            return {
+                'type': 'episode',
+                'slug': ep_match.group(1),
+                'season': int(ep_match.group(2)),
+                'episode': int(ep_match.group(3))
+            }
+        # Match series: /series/[slug]
+        series_match = re.search(r'/series/([^/]+)', clean, re.IGNORECASE)
+        if series_match:
+            return {
+                'type': 'series',
+                'slug': series_match.group(1).split('?')[0].split('/')[0]
+            }
+        # Match movie: /movie/[slug]
+        movie_match = re.search(r'/movie/([^/]+)', clean, re.IGNORECASE)
+        if movie_match:
+            return {
+                'type': 'movie',
+                'slug': movie_match.group(1).split('?')[0].split('/')[0]
+            }
+        # Fallback slug
+        slug = clean.split('?')[0].split('/')[-1]
+        return {
+            'type': 'unknown',
+            'slug': slug
+        }
+
+    @staticmethod
+    def extract_slug(url: str) -> str:
+        parsed = IdlixHelper.parse_url(url)
+        return parsed['slug']
 
     def get_home(self):
         """Fetch featured / browse movies list for CLI and GUI"""
@@ -179,21 +211,115 @@ class IdlixHelper:
         except Exception as error_get_home:
             return {'status': False, 'message': str(error_get_home)}
 
+    def get_season_episodes(self, slug: str, season_num: int):
+        """Fetch list of episodes for a specific season of a TV series"""
+        try:
+            res = self.request.get(f"{self.BASE_API_URL}/series/{slug}/season/{season_num}", timeout=12)
+            if res.status_code == 200:
+                data = res.json()
+                episodes = data.get('season', {}).get('episodes', [])
+                return {'status': True, 'episodes': episodes}
+            return {'status': False, 'message': f'Failed to fetch season episodes: {res.status_code}'}
+        except Exception as e:
+            return {'status': False, 'message': str(e)}
+
+    def get_episode_data(self, slug: str, season_num: int, episode_num: int):
+        """Fetch specific episode details and configure media state"""
+        try:
+            res = self.request.get(
+                f"{self.BASE_API_URL}/series/{slug}/season/{season_num}/episode/{episode_num}",
+                timeout=12
+            )
+            if res.status_code == 200:
+                data = res.json()
+                series = data.get('series', {})
+                season = data.get('season', {})
+                episode = data.get('episode', {})
+
+                self.media_type = 'episode'
+                self.video_id = episode.get('id')
+                self.series_slug = slug
+                self.season_number = season_num
+                self.episode_number = episode_num
+
+                series_title = series.get('title') or slug.replace('-', ' ').title()
+                ep_num = episode.get('episodeNumber') or episode_num
+                ep_name = episode.get('name')
+                if ep_name:
+                    title = f"{series_title} S{season_num:02d}E{ep_num:02d} - {ep_name}"
+                else:
+                    title = f"{series_title} S{season_num:02d}E{ep_num:02d}"
+
+                self.video_name = re.sub(r'[\\/*?:"<>|]', '', title).strip()
+
+                still_path = episode.get('stillPath') or series.get('backdropPath') or series.get('posterPath') or ''
+                if still_path and not still_path.startswith('http'):
+                    self.poster = f"https://image.tmdb.org/t/p/w500{still_path}"
+                else:
+                    self.poster = still_path
+
+                return {
+                    'status': True,
+                    'video_id': self.video_id,
+                    'video_name': self.video_name,
+                    'poster': self.poster,
+                    'media_type': 'episode',
+                    'series_title': series_title,
+                    'season_number': season_num,
+                    'episode_number': ep_num,
+                    'episode_name': ep_name
+                }
+            return {'status': False, 'message': f'Episode not found on server (status {res.status_code})'}
+        except Exception as e:
+            return {'status': False, 'message': str(e)}
+
     def get_video_data(self, url: str):
-        """Fetch movie details and internal ID from URL or slug"""
+        """Fetch movie or series details and internal ID from URL or slug"""
         if not url:
             return {'status': False, 'message': 'URL is required'}
 
-        slug = self.extract_slug(url)
-        if not slug:
-            return {'status': False, 'message': 'Invalid movie URL or slug'}
-
+        parsed = self.parse_url(url)
+        slug = parsed['slug']
         self.movie_slug = slug
 
+        # Case 1: Direct episode URL (/series/[slug]/season/[s]/episode/[e])
+        if parsed['type'] == 'episode':
+            return self.get_episode_data(slug, parsed['season'], parsed['episode'])
+
+        # Case 2: Series root URL (/series/[slug])
+        if parsed['type'] == 'series':
+            try:
+                res = self.request.get(f"{self.BASE_API_URL}/series/{slug}", timeout=12)
+                if res.status_code == 200:
+                    data = res.json()
+                    self.series_data = data
+                    self.series_slug = slug
+                    title = data.get('title') or slug.replace('-', ' ').title()
+                    poster_path = data.get('posterPath') or data.get('backdropPath') or ''
+                    if poster_path and not poster_path.startswith('http'):
+                        self.poster = f"https://image.tmdb.org/t/p/w500{poster_path}"
+                    else:
+                        self.poster = poster_path
+
+                    return {
+                        'status': True,
+                        'is_series': True,
+                        'media_type': 'series',
+                        'slug': slug,
+                        'series_title': title,
+                        'poster': self.poster,
+                        'seasons': data.get('seasons', [])
+                    }
+                return {'status': False, 'message': f'Series not found on server (status {res.status_code})'}
+            except Exception as e:
+                return {'status': False, 'message': str(e)}
+
+        # Case 3: Movie or fallback slug
         try:
             res = self.request.get(f"{self.BASE_API_URL}/movies/{slug}", timeout=12)
             if res.status_code == 200:
                 data = res.json()
+                self.media_type = 'movie'
                 self.video_id = data.get('id')
                 title = data.get('title') or slug.replace('-', ' ').title()
                 year = data.get('releaseYear')
@@ -212,12 +338,36 @@ class IdlixHelper:
                     'status': True,
                     'video_id': self.video_id,
                     'video_name': self.video_name,
-                    'poster': self.poster
+                    'poster': self.poster,
+                    'media_type': 'movie'
                 }
             else:
+                # If /movies/ returned 404, check if it's a series slug
+                res_series = self.request.get(f"{self.BASE_API_URL}/series/{slug}", timeout=12)
+                if res_series.status_code == 200:
+                    data = res_series.json()
+                    self.series_data = data
+                    self.series_slug = slug
+                    title = data.get('title') or slug.replace('-', ' ').title()
+                    poster_path = data.get('posterPath') or data.get('backdropPath') or ''
+                    if poster_path and not poster_path.startswith('http'):
+                        self.poster = f"https://image.tmdb.org/t/p/w500{poster_path}"
+                    else:
+                        self.poster = poster_path
+
+                    return {
+                        'status': True,
+                        'is_series': True,
+                        'media_type': 'series',
+                        'slug': slug,
+                        'series_title': title,
+                        'poster': self.poster,
+                        'seasons': data.get('seasons', [])
+                    }
+
                 return {
                     'status': False,
-                    'message': f'Movie not found on server (status {res.status_code})'
+                    'message': f'Media not found on server (status {res.status_code})'
                 }
         except Exception as error_video_data:
             return {'status': False, 'message': str(error_video_data)}
@@ -229,8 +379,9 @@ class IdlixHelper:
 
         try:
             # 1. Get play-info and gate token
+            watch_type = "episode" if self.media_type == "episode" else "movie"
             res = self.request.get(
-                f"{self.BASE_API_URL}/watch/play-info/movie/{self.video_id}",
+                f"{self.BASE_API_URL}/watch/play-info/{watch_type}/{self.video_id}",
                 timeout=12
             )
             if res.status_code != 200:

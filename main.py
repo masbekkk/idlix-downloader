@@ -30,8 +30,63 @@ def process_movie(idlix_helper, url: str, mode: str):
         logger.error("Error getting video data")
         return
 
+    # Handle TV series root URL (prompt for Season and Episode)
+    if video_data.get("is_series"):
+        seasons = video_data.get("seasons", [])
+        if not seasons:
+            logger.error("No seasons found for this series")
+            return
+
+        season_choices = [
+            f"Season {s.get('seasonNumber', i+1)}: {s.get('name', '')}"
+            for i, s in enumerate(seasons)
+        ]
+        s_question = [
+            inquirer.List(
+                "season",
+                message=f"Select Season for {video_data.get('series_title')}",
+                choices=season_choices,
+                carousel=True
+            )
+        ]
+        s_answer = inquirer.prompt(s_question)
+        if not s_answer:
+            return
+        selected_season_idx = season_choices.index(s_answer["season"])
+        season_num = seasons[selected_season_idx].get("seasonNumber", selected_season_idx + 1)
+
+        logger.info(f"Fetching episodes for Season {season_num}...")
+        eps_data = idlix_helper.get_season_episodes(video_data["slug"], season_num)
+        episodes = eps_data.get("episodes", [])
+        if not episodes:
+            logger.error(f"No episodes found for Season {season_num}")
+            return
+
+        ep_choices = [
+            f"Ep {e.get('episodeNumber')}: {e.get('name', 'Episode ' + str(e.get('episodeNumber')))}"
+            for e in episodes
+        ]
+        e_question = [
+            inquirer.List(
+                "episode",
+                message=f"Select Episode (Season {season_num})",
+                choices=ep_choices,
+                carousel=True
+            )
+        ]
+        e_answer = inquirer.prompt(e_question)
+        if not e_answer:
+            return
+        selected_ep_idx = ep_choices.index(e_answer["episode"])
+        ep_num = episodes[selected_ep_idx].get("episodeNumber")
+
+        video_data = idlix_helper.get_episode_data(video_data["slug"], season_num, ep_num)
+        if not video_data.get("status"):
+            logger.error("Error loading selected episode")
+            return
+
     logger.info(
-        f"Getting video data | Video ID: {video_data['video_id']} | Video Name: {video_data['video_name']}"
+        f"Media Ready | ID: {video_data['video_id']} | Title: {video_data['video_name']}"
     )
 
     embed = retry(idlix_helper.get_embed_url)
