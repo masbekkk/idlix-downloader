@@ -554,15 +554,93 @@ class IdlixHelper:
         return labels.get((lang or "").lower().strip(), (lang or "Subtitle").capitalize())
 
     @staticmethod
-    def convert_vtt_to_srt(vtt_file: str, target_srt: str = None) -> str:
-        """Converts WebVTT file to standard compliant SRT format without header corruption"""
+    def parse_time_to_seconds(ts_str: str) -> float:
+        """Parse HH:MM:SS.mmm or MM:SS.mmm into total seconds"""
+        ts_str = ts_str.strip().replace(',', '.')
+        parts = ts_str.split(':')
+        if len(parts) == 3:
+            h, m, s = parts
+            return int(h) * 3600 + int(m) * 60 + float(s)
+        elif len(parts) == 2:
+            m, s = parts
+            return int(m) * 60 + float(s)
+        return float(parts[0])
+
+    @staticmethod
+    def format_seconds_to_srt_time(seconds: float) -> str:
+        """Format total seconds into standard SRT timestamp HH:MM:SS,mmm"""
+        seconds = max(0.0, seconds)
+        total_ms = int(round(seconds * 1000))
+        ms = total_ms % 1000
+        total_s = total_ms // 1000
+        s = total_s % 60
+        total_m = total_s // 60
+        m = total_m % 60
+        h = total_m // 60
+        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+    @staticmethod
+    def clean_mojibake(text: str) -> str:
+        """Clean common UTF-8 mojibake patterns in subtitle text"""
+        replacements = {
+            'â€¦': '…',
+            'â€œ': '“',
+            'â€\x9d': '”',
+            'â€': '”',
+            'â€˜': '‘',
+            'â€™': '’',
+            'â€”': '—',
+            'â€“': '–',
+            'Ã©': 'é',
+            'Ã¨': 'è',
+            'Ã ': 'à',
+            'Ã¡': 'á',
+            'Ã³': 'ó',
+            'Ã±': 'ñ',
+            'Ã§': 'ç',
+            'â€¢': '•',
+        }
+        for bad, good in replacements.items():
+            text = text.replace(bad, good)
+        return text
+
+    @staticmethod
+    def shift_srt_file(srt_path: str, offset_seconds: float, output_path: str = None) -> str:
+        """Adjusts all timestamps in an existing SRT file by offset_seconds"""
+        target_path = output_path or srt_path
+        with open(srt_path, 'r', encoding='utf-8', errors='ignore') as sf:
+            content = sf.read()
+
+        ts_pattern = re.compile(
+            r'(\d{2}:\d{2}:\d{2}[\.,]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[\.,]\d{3})'
+        )
+
+        def shift_cue(match):
+            t_start = IdlixHelper.parse_time_to_seconds(match.group(1))
+            t_end = IdlixHelper.parse_time_to_seconds(match.group(2))
+            s_start = max(0.0, t_start + offset_seconds)
+            s_end = max(s_start + 0.1, t_end + offset_seconds)
+            return f"{IdlixHelper.format_seconds_to_srt_time(s_start)} --> {IdlixHelper.format_seconds_to_srt_time(s_end)}"
+
+        shifted_content = ts_pattern.sub(shift_cue, content)
+        shifted_content = IdlixHelper.clean_mojibake(shifted_content)
+
+        with open(target_path, 'w', encoding='utf-8') as out_f:
+            out_f.write(shifted_content)
+
+        return target_path
+
+    @staticmethod
+    def convert_vtt_to_srt(vtt_file: str, target_srt: str = None, time_offset_seconds: float = 0.0) -> str:
+        """Converts WebVTT file to standard compliant SRT format with optional time sync offset and mojibake cleaning"""
         output_srt = target_srt or (vtt_file.rsplit('.', 1)[0] + '.srt')
         try:
             with open(vtt_file, 'r', encoding='utf-8', errors='ignore') as vf:
                 vtt_text = vf.read()
 
-            # 1. Normalize line endings and strip BOM
+            # 1. Normalize line endings, strip BOM, and clean mojibake
             text = vtt_text.lstrip('\ufeff').replace('\r\n', '\n').replace('\r', '\n')
+            text = IdlixHelper.clean_mojibake(text)
 
             # 2. Strip WEBVTT header and comments/metadata before the first cue
             lines = text.split('\n')
@@ -581,26 +659,20 @@ class IdlixHelper:
 
             content = '\n'.join(cue_lines)
 
-            # 3. Standardize timestamps to HH:MM:SS,mmm --> HH:MM:SS,mmm
-            def fix_timestamp(match):
-                h1 = match.group(1) or '00:'
-                m1 = match.group(2)
-                s1 = match.group(3)
-                ms1 = match.group(4)
-                h2 = match.group(5) or '00:'
-                m2 = match.group(6)
-                s2 = match.group(7)
-                ms2 = match.group(8)
-                if len(h1) == 2 and not h1.endswith(':'):
-                    h1 += ':'
-                if len(h2) == 2 and not h2.endswith(':'):
-                    h2 += ':'
-                return f'{h1}{m1}:{s1},{ms1} --> {h2}{m2}:{s2},{ms2}'
+            # 3. Standardize and shift timestamps to HH:MM:SS,mmm --> HH:MM:SS,mmm
+            def shift_and_format_ts(match):
+                raw_start = match.group(1)
+                raw_end = match.group(2)
+                t_start = IdlixHelper.parse_time_to_seconds(raw_start)
+                t_end = IdlixHelper.parse_time_to_seconds(raw_end)
+                s_start = max(0.0, t_start + time_offset_seconds)
+                s_end = max(s_start + 0.1, t_end + time_offset_seconds)
+                return f"{IdlixHelper.format_seconds_to_srt_time(s_start)} --> {IdlixHelper.format_seconds_to_srt_time(s_end)}"
 
             ts_pattern = re.compile(
-                r'(?:(\d{2}:))?(\d{2}):(\d{2})[\.,](\d{3})\s*-->\s*(?:(\d{2}:))?(\d{2}):(\d{2})[\.,](\d{3})'
+                r'((?:\d{2}:)?\d{2}:\d{2}[\.,]\d{3})\s*-->\s*((?:\d{2}:)?\d{2}:\d{2}[\.,]\d{3})'
             )
-            content = ts_pattern.sub(fix_timestamp, content)
+            content = ts_pattern.sub(shift_and_format_ts, content)
 
             # 4. Split blocks and ensure strictly valid numbered cues
             blocks = re.split(r'\n\s*\n', content.strip())
@@ -636,9 +708,9 @@ class IdlixHelper:
             logger.error(f"Failed converting VTT to SRT: {err}")
             return None
 
-    def get_subtitles(self, download=True, output_dir=None):
+    def get_subtitles(self, download=True, output_dir=None, time_offset: float = 0.0):
         """
-        Downloads all available subtitles, converts to SRT,
+        Downloads all available subtitles, converts to SRT with optional time sync offset,
         and saves them alongside the movie file.
         """
         if not self.subtitles_list:
@@ -697,7 +769,7 @@ class IdlixHelper:
                     vf.write(sub_res.content)
 
                 canonical_srt = os.path.join(out_dir, f"{clean_name}.{iso_lang}.srt")
-                res_srt = self.convert_vtt_to_srt(temp_vtt, canonical_srt)
+                res_srt = self.convert_vtt_to_srt(temp_vtt, canonical_srt, time_offset_seconds=time_offset)
 
                 if os.path.exists(temp_vtt):
                     try:
@@ -720,7 +792,8 @@ class IdlixHelper:
                         "url": sub_url,
                         "srt_path": canonical_srt
                     })
-                    logger.info(f"Subtitle ready [{label}]: {os.path.basename(canonical_srt)}")
+                    offset_msg = f" (sync offset: {time_offset:+.2f}s)" if time_offset != 0.0 else ""
+                    logger.info(f"Subtitle ready [{label}]{offset_msg}: {os.path.basename(canonical_srt)}")
 
             except Exception as e:
                 logger.warning(f"Error processing subtitle {lang_raw}: {e}")
@@ -730,9 +803,9 @@ class IdlixHelper:
             self.is_subtitle = True
         return downloaded
 
-    def get_subtitle(self, download=True):
-        """Downloads primary subtitle (preferring Indonesian) for backward compatibility"""
-        subs = self.get_subtitles(download=download)
+    def get_subtitle(self, download=True, time_offset: float = 0.0):
+        """Downloads primary subtitle (preferring Indonesian) with optional time sync offset"""
+        subs = self.get_subtitles(download=download, time_offset=time_offset)
         if not subs:
             self.is_subtitle = False
             return {'status': False, 'message': 'Subtitle not available'}
@@ -745,13 +818,13 @@ class IdlixHelper:
             'subtitles': subs
         }
 
-    def download_m3u8(self, output_dir=None):
-        """Downloads all HLS segments multithreaded and stitches into MP4 with embedded & sidecar subtitles using FFmpeg"""
+    def download_m3u8(self, output_dir=None, time_offset: float = 0.0):
+        """Downloads all HLS segments multithreaded (supporting fMP4, separate audio tracks, and TS) and stitches into MP4 with subtitles using FFmpeg"""
         try:
             if not self.m3u8_url:
                 return {'status': False, 'message': 'M3U8 URL is required'}
 
-            # 1. Fetch variant playlist to extract segment URLs
+            # 1. Fetch variant playlist to extract video segment & init URLs
             variant_res = self.request.get(
                 self.m3u8_url,
                 headers={"Origin": "https://z2.idlixku.com", "Referer": "https://z2.idlixku.com/"},
@@ -762,30 +835,69 @@ class IdlixHelper:
 
             lines = variant_res.text.strip().splitlines()
             query_str = urlparse(self.m3u8_url).query
-            segment_urls = []
+            video_init_url = None
+            video_seg_urls = []
+
             for line in lines:
                 line = line.strip()
-                if line and not line.startswith('#'):
+                if line.startswith('#EXT-X-MAP:URI='):
+                    m_init = re.search(r'URI="([^"]+)"', line)
+                    if m_init:
+                        video_init_url = urljoin(self.m3u8_url, m_init.group(1))
+                        if query_str and "?" not in video_init_url:
+                            video_init_url += "?" + query_str
+                elif line and not line.startswith('#'):
                     seg_url = urljoin(self.m3u8_url, line)
                     if query_str and "?" not in seg_url:
                         seg_url += "?" + query_str
-                    segment_urls.append(seg_url)
+                    video_seg_urls.append(seg_url)
 
-            if not segment_urls:
+            if not video_seg_urls:
                 return {'status': False, 'message': 'No video segments found in playlist'}
 
-            total_segments = len(segment_urls)
-            logger.info(f"Found {total_segments} video segments to download...")
+            # 2. Check for separate audio track in master playlist
+            audio_init_url = None
+            audio_seg_urls = []
+            if self.variant_playlist and getattr(self.variant_playlist, 'media', None):
+                for m_elem in self.variant_playlist.media:
+                    if getattr(m_elem, 'type', '').upper() == "AUDIO" and getattr(m_elem, 'uri', None):
+                        a_playlist_url = urljoin(self.m3u8_url, m_elem.uri)
+                        if query_str and "?" not in a_playlist_url:
+                            a_playlist_url += "?" + query_str
+                        try:
+                            a_res = self.request.get(
+                                a_playlist_url,
+                                headers={"Origin": "https://z2.idlixku.com", "Referer": "https://z2.idlixku.com/"},
+                                timeout=12
+                            )
+                            if a_res.status_code == 200:
+                                for a_line in a_res.text.strip().splitlines():
+                                    a_line = a_line.strip()
+                                    if a_line.startswith('#EXT-X-MAP:URI='):
+                                        m_ainit = re.search(r'URI="([^"]+)"', a_line)
+                                        if m_ainit:
+                                            audio_init_url = urljoin(a_playlist_url, m_ainit.group(1))
+                                            if query_str and "?" not in audio_init_url:
+                                                audio_init_url += "?" + query_str
+                                    elif a_line and not a_line.startswith('#'):
+                                        a_seg = urljoin(a_playlist_url, a_line)
+                                        if query_str and "?" not in a_seg:
+                                            a_seg += "?" + query_str
+                                        audio_seg_urls.append(a_seg)
+                                logger.info(f"Detected separate audio stream ({len(audio_seg_urls)} segments)")
+                                break
+                        except Exception as e_audio:
+                            logger.warning(f"Could not load audio track: {e_audio}")
 
-            # 2. Prepare temporary directory
+            total_video_segments = len(video_seg_urls)
+            logger.info(f"Found {total_video_segments} video segments to download...")
+
+            # 3. Prepare temporary directory
             tmp_dir = os.path.join(os.getcwd(), f"tmp_{int(time.time())}")
             os.makedirs(tmp_dir, exist_ok=True)
 
-            # 3. Concurrent multithreaded download
-            completed_count = 0
-
-            def download_segment(idx: int, url: str) -> bool:
-                seg_path = os.path.join(tmp_dir, f"seg_{idx:05d}.ts")
+            # 4. Multithreaded segment downloader helper
+            def download_chunk(dest_path: str, url: str) -> bool:
                 for _ in range(3):
                     try:
                         r = self.request.get(
@@ -793,8 +905,8 @@ class IdlixHelper:
                             headers={"Referer": "https://z2.idlixku.com/", "Origin": "https://z2.idlixku.com"},
                             timeout=15
                         )
-                        if r.status_code == 200:
-                            with open(seg_path, "wb") as f:
+                        if r.status_code == 200 and r.content:
+                            with open(dest_path, "wb") as f:
                                 f.write(r.content)
                             return True
                     except Exception:
@@ -802,54 +914,111 @@ class IdlixHelper:
                     time.sleep(1)
                 return False
 
+            # Download video init if present
+            v_init_path = os.path.join(tmp_dir, "v_init.mp4") if video_init_url else None
+            if video_init_url:
+                if not download_chunk(v_init_path, video_init_url):
+                    logger.warning("Failed to download video init segment")
+
+            # Download video segments
+            v_paths = [os.path.join(tmp_dir, f"v_seg_{i:05d}.dat") for i in range(total_video_segments)]
+            completed_v = 0
             with ThreadPoolExecutor(max_workers=10) as executor:
                 futures = {
-                    executor.submit(download_segment, i, url): i
-                    for i, url in enumerate(segment_urls)
+                    executor.submit(download_chunk, v_paths[i], url): i
+                    for i, url in enumerate(video_seg_urls)
                 }
                 for f in as_completed(futures):
                     if f.result():
-                        completed_count += 1
-                        if completed_count % 25 == 0 or completed_count == total_segments:
-                            pct = int((completed_count / total_segments) * 100)
-                            logger.info(f"Downloading chunks: {completed_count}/{total_segments} ({pct}%)")
+                        completed_v += 1
+                        if completed_v % 25 == 0 or completed_v == total_video_segments:
+                            pct = int((completed_v / total_video_segments) * 100)
+                            logger.info(f"Downloading video chunks: {completed_v}/{total_video_segments} ({pct}%)")
                     else:
-                        logger.warning(f"Failed chunk {futures[f]}, will continue...")
+                        logger.warning(f"Failed video chunk {futures[f]}, continuing...")
 
-            # 4. Create concat manifest for FFmpeg
-            manifest_path = os.path.join(tmp_dir, "list.txt")
-            with open(manifest_path, "w") as mf:
-                for i in range(total_segments):
-                    seg_name = f"seg_{i:05d}.ts"
-                    if os.path.exists(os.path.join(tmp_dir, seg_name)):
-                        mf.write(f"file '{seg_name}'\n")
+            # Download audio stream if separate
+            a_init_path = None
+            a_paths = []
+            has_separate_audio = bool(audio_seg_urls)
+            if has_separate_audio:
+                total_audio_segments = len(audio_seg_urls)
+                if audio_init_url:
+                    a_init_path = os.path.join(tmp_dir, "a_init.mp4")
+                    download_chunk(a_init_path, audio_init_url)
 
-            # 5. Handle Subtitles (sidecar and embedded)
+                a_paths = [os.path.join(tmp_dir, f"a_seg_{i:05d}.dat") for i in range(total_audio_segments)]
+                completed_a = 0
+                logger.info(f"Downloading {total_audio_segments} audio segments...")
+                with ThreadPoolExecutor(max_workers=10) as executor:
+                    futures_a = {
+                        executor.submit(download_chunk, a_paths[i], url): i
+                        for i, url in enumerate(audio_seg_urls)
+                    }
+                    for f in as_completed(futures_a):
+                        if f.result():
+                            completed_a += 1
+                            if completed_a % 50 == 0 or completed_a == total_audio_segments:
+                                pct = int((completed_a / total_audio_segments) * 100)
+                                logger.info(f"Downloading audio chunks: {completed_a}/{total_audio_segments} ({pct}%)")
+
+            # 5. Assemble raw streams
+            raw_video_path = os.path.join(tmp_dir, "raw_video.mp4" if video_init_url else "raw_video.ts")
+            with open(raw_video_path, "wb") as out_vf:
+                if v_init_path and os.path.exists(v_init_path):
+                    with open(v_init_path, "rb") as inf:
+                        out_vf.write(inf.read())
+                for vp in v_paths:
+                    if os.path.exists(vp):
+                        with open(vp, "rb") as inf:
+                            out_vf.write(inf.read())
+
+            raw_audio_path = None
+            if has_separate_audio:
+                raw_audio_path = os.path.join(tmp_dir, "raw_audio.m4a" if audio_init_url else "raw_audio.ts")
+                with open(raw_audio_path, "wb") as out_af:
+                    if a_init_path and os.path.exists(a_init_path):
+                        with open(a_init_path, "rb") as inf:
+                            out_af.write(inf.read())
+                    for ap in a_paths:
+                        if os.path.exists(ap):
+                            with open(ap, "rb") as inf:
+                                out_af.write(inf.read())
+
+            # 6. Handle Subtitles (sidecar and embedded)
             out_dir = output_dir or os.getcwd()
             os.makedirs(out_dir, exist_ok=True)
             output_filename = f"{self.video_name}.mp4"
             output_path = os.path.join(out_dir, output_filename)
 
             logger.info("Checking and preparing subtitles...")
-            subs = self.get_subtitles(download=True, output_dir=out_dir)
+            subs = self.get_subtitles(download=True, output_dir=out_dir, time_offset=time_offset)
 
-            # 6. FFmpeg concat and mux to MP4
-            logger.info(f"Merging segments into {output_filename} via FFmpeg...")
+            # 7. FFmpeg concat and mux to MP4
+            logger.info(f"Merging streams into {output_filename} via FFmpeg...")
 
             mux_success = False
+            # Base command
+            cmd = ["ffmpeg", "-y", "-i", raw_video_path]
+            if raw_audio_path and os.path.exists(raw_audio_path):
+                cmd += ["-i", raw_audio_path]
+
+            sub_input_offset = 2 if (raw_audio_path and os.path.exists(raw_audio_path)) else 1
+
             if subs:
-                cmd = [
-                    "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-                    "-i", manifest_path
-                ]
                 for sub in subs:
                     cmd += ["-i", sub["srt_path"]]
 
-                cmd += ["-map", "0:v", "-map", "0:a?"]
-                for i in range(len(subs)):
-                    cmd += ["-map", f"{i + 1}:0"]
+                cmd += ["-map", "0:v"]
+                if raw_audio_path and os.path.exists(raw_audio_path):
+                    cmd += ["-map", "1:a"]
+                else:
+                    cmd += ["-map", "0:a?"]
 
-                cmd += ["-c:v", "copy", "-c:a", "copy", "-c:s", "mov_text"]
+                for i in range(len(subs)):
+                    cmd += ["-map", f"{sub_input_offset + i}:0"]
+
+                cmd += ["-c:v", "copy", "-c:a", "copy", "-c:s", "mov_text", "-movflags", "+faststart"]
 
                 for i, sub in enumerate(subs):
                     cmd += [
@@ -858,21 +1027,25 @@ class IdlixHelper:
                     ]
                 cmd.append(output_path)
 
-                result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                res_mux = subprocess.run(cmd, capture_output=True, text=True)
+                if res_mux.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                     mux_success = True
                     logger.success(f"Successfully embedded {len(subs)} subtitle track(s) into {output_filename}")
                 else:
-                    logger.warning("FFmpeg subtitle muxing failed, falling back to clean video concat...")
+                    err_msg = res_mux.stderr.strip().splitlines()[-1] if (res_mux.stderr and res_mux.stderr.strip()) else "Code " + str(res_mux.returncode)
+                    logger.warning(f"FFmpeg subtitle muxing failed ({err_msg}), falling back to clean video/audio copy...")
 
             if not mux_success:
-                cmd_fallback = [
-                    "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-                    "-i", manifest_path,
-                    "-c", "copy",
-                    output_path
-                ]
-                result = subprocess.run(cmd_fallback, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                cmd_fallback = ["ffmpeg", "-y", "-i", raw_video_path]
+                if raw_audio_path and os.path.exists(raw_audio_path):
+                    cmd_fallback += ["-i", raw_audio_path, "-map", "0:v", "-map", "1:a", "-c", "copy"]
+                else:
+                    cmd_fallback += ["-c", "copy"]
+                cmd_fallback += ["-movflags", "+faststart", output_path]
+                res_fallback = subprocess.run(cmd_fallback, capture_output=True, text=True)
+                if res_fallback.returncode != 0:
+                    err_msg = res_fallback.stderr.strip().splitlines()[-1] if (res_fallback.stderr and res_fallback.stderr.strip()) else "Code " + str(res_fallback.returncode)
+                    logger.error(f"FFmpeg copy error: {err_msg}")
 
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -889,7 +1062,7 @@ class IdlixHelper:
             else:
                 return {
                     'status': False,
-                    'message': f'FFmpeg concatenation failed (code {result.returncode})'
+                    'message': 'FFmpeg merging failed to produce valid MP4'
                 }
 
         except Exception as error_download:

@@ -27,6 +27,7 @@ Program mendukung Windows dan Linux.
 | Select Resolution       | Memilih resolusi (variant playlist)                                | ✔      |
 | Subtitle Support        | Download dan load subtitle otomatis                                | ✔      |
 | Download Subtitle Only  | Opsi download subtitle saja (.srt) tanpa mengunduh video           | ✔      |
+| Subtitle Sync / Shift   | Pengaturan offset waktu subtitle (+/- detik) untuk mengatasi delay  | ✔      |
 | FFplay Integration      | Pemutaran video stabil                                              | ✔      |
 | Stop Player Feature     | Menghentikan ffplay                                                 | ✔      |
 | Download Folder Button  | Membuka folder hasil download                                       | ✔      |
@@ -72,10 +73,11 @@ python main.py
    - Play by URL
    - Download by URL
    - Download Subtitle by URL
+   - Shift / Sync Subtitle (.srt) (atur offset waktu file subtitle yang ada)
    - Stop Player
    - Open Downloads Folder
    - Clear Log
-4. Subtitle otomatis didownload dan dikonversi ke format .srt.
+4. Subtitle otomatis didownload dan dikonversi ke format .srt dengan opsi offset waktu (misal: `-1.2` detik jika subtitle telat).
 5. Player menggunakan ffplay.
 
 ------------------------------------------------------------
@@ -99,9 +101,10 @@ Menu CLI:
 4. Download Movie by URL
 5. Play Movie by URL
 6. Download Subtitles Only by URL
-7. Exit
+7. Shift / Sync Existing Subtitle File (.srt)
+8. Exit
 
-Dengan retry logic dan output tabel PrettyTable.
+Dengan retry logic, opsi subtitle sync offset, dan output tabel PrettyTable.
 
 
 ------------------------------------------------------------

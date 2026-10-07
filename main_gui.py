@@ -97,6 +97,7 @@ class IdlixGUI:
         ttk.Button(right_panel, text="Download by URL", command=self.download_by_url).pack(fill="x", pady=4)
         ttk.Button(right_panel, text="Play by URL", command=self.play_by_url).pack(fill="x", pady=4)
         ttk.Button(right_panel, text="Download Subtitle by URL", command=self.download_subtitle_by_url).pack(fill="x", pady=4)
+        ttk.Button(right_panel, text="Shift / Sync Subtitle (.srt)", command=self.shift_existing_subtitle).pack(fill="x", pady=4)
         ttk.Button(right_panel, text="Stop Player", command=self.stop_player).pack(fill="x", pady=4)
         ttk.Button(right_panel, text="Open Downloads Folder", command=self.open_download_folder).pack(fill="x", pady=4)
         ttk.Button(right_panel, text="Clear Log", command=self.clear_log).pack(fill="x", pady=4)
@@ -182,11 +183,26 @@ class IdlixGUI:
             command=lambda: [popup.destroy(), self.process_movie(movie["url"], "download")]
         ).pack(pady=4)
 
+        def on_sub_click():
+            popup.destroy()
+            offset_str = simpledialog.askstring(
+                "Subtitle Sync",
+                f"Enter sync offset in seconds for:\n'{movie['title']}':\n\n(e.g. -1.2 to display earlier, 0.0 for original)",
+                initialvalue="0.0"
+            )
+            offset = 0.0
+            if offset_str:
+                try:
+                    offset = float(offset_str)
+                except ValueError:
+                    offset = 0.0
+            self.process_movie(movie["url"], "subtitle", time_offset=offset)
+
         ttk.Button(
             popup,
             text="Download Subtitles Only",
             width=22,
-            command=lambda: [popup.destroy(), self.process_movie(movie["url"], "subtitle")]
+            command=on_sub_click
         ).pack(pady=4)
 
         ttk.Button(popup, text="Cancel", width=22, command=popup.destroy).pack(pady=8)
@@ -277,12 +293,46 @@ class IdlixGUI:
     def download_subtitle_by_url(self):
         url = simpledialog.askstring("Download Subtitles", "Enter Movie or Series Episode URL:")
         if url:
-            self.process_movie(url.strip(), "subtitle")
+            offset_str = simpledialog.askstring(
+                "Subtitle Sync",
+                "Enter subtitle sync offset in seconds:\n(e.g. -1.2 to display earlier, 0.0 for original):",
+                initialvalue="0.0"
+            )
+            offset = 0.0
+            if offset_str:
+                try:
+                    offset = float(offset_str)
+                except ValueError:
+                    offset = 0.0
+            self.process_movie(url.strip(), "subtitle", time_offset=offset)
+
+    def shift_existing_subtitle(self):
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(
+            title="Select SRT Subtitle File to Shift",
+            filetypes=[("SRT Subtitles", "*.srt"), ("All Files", "*.*")]
+        )
+        if not path:
+            return
+        offset_str = simpledialog.askstring(
+            "Shift Subtitle",
+            f"Enter offset in seconds for:\n{os.path.basename(path)}\n\n(e.g. -1.2 to display earlier, +1.5 to delay):",
+            initialvalue="-1.2"
+        )
+        if offset_str:
+            try:
+                offset = float(offset_str)
+                new_path = IdlixHelper.shift_srt_file(path, offset)
+                logger.success(f"Shifted subtitle saved successfully: {new_path}")
+                messagebox.showinfo("Success", f"Subtitle adjusted by {offset:+.2f}s:\n{os.path.basename(new_path)}")
+            except Exception as e:
+                logger.error(f"Failed to shift subtitle: {e}")
+                messagebox.showerror("Error", f"Failed to shift subtitle: {e}")
 
     # ============================================================
     # CORE PROCESS (100% same as CLI)
     # ============================================================
-    def process_movie(self, url: str, mode: str):
+    def process_movie(self, url: str, mode: str, time_offset: float = 0.0):
 
         def task():
             idlix = self.idlix
@@ -363,7 +413,9 @@ class IdlixGUI:
             # SUBTITLE ONLY
             if mode == "subtitle":
                 logger.info(f"Downloading subtitles for {video_data['video_name']}...")
-                subs = idlix.get_subtitles(download=True)
+                if time_offset != 0.0:
+                    logger.info(f"Sync offset applied: {time_offset:+.2f}s")
+                subs = idlix.get_subtitles(download=True, time_offset=time_offset)
                 if subs:
                     logger.success(f"Downloaded {len(subs)} subtitle file(s) (.srt):")
                     for sub in subs:
@@ -417,7 +469,7 @@ class IdlixGUI:
             # DOWNLOAD
             else:
                 logger.info("Starting download with subtitles...")
-                result = idlix.download_m3u8()
+                result = idlix.download_m3u8(time_offset=time_offset)
                 if result.get("status"):
                     sub_info = " (with embedded subtitles)" if result.get("subtitles_muxed") else ""
                     logger.success(f"Downloaded{sub_info}: {result['path']}")

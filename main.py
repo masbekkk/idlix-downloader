@@ -24,7 +24,7 @@ def play_m3u8_thread(idlix_helper):
         logger.error("Error playing m3u8")
 
 
-def process_movie(idlix_helper, url: str, mode: str):
+def process_movie(idlix_helper, url: str, mode: str, time_offset: float = 0.0):
     video_data = retry(idlix_helper.get_video_data, url)
     if not video_data.get("status"):
         logger.error("Error getting video data")
@@ -99,7 +99,9 @@ def process_movie(idlix_helper, url: str, mode: str):
     # If subtitle only mode → download subtitles and return immediately
     if mode == "subtitle":
         logger.info(f"Downloading subtitles for {video_data['video_name']}...")
-        subs = idlix_helper.get_subtitles(download=True)
+        if time_offset != 0.0:
+            logger.info(f"Sync offset applied: {time_offset:+.2f}s")
+        subs = idlix_helper.get_subtitles(download=True, time_offset=time_offset)
         if subs:
             logger.success(f"Downloaded {len(subs)} subtitle file(s) (.srt):")
             for sub in subs:
@@ -162,7 +164,7 @@ def process_movie(idlix_helper, url: str, mode: str):
     # 6. If download
     else:
         logger.info(f"Starting download for {video_data['video_name']} (with subtitles)...")
-        result = idlix_helper.download_m3u8()
+        result = idlix_helper.download_m3u8(time_offset=time_offset)
         if result.get("status"):
             logger.success(f"Downloading {video_data['video_name']} success: {result['path']}")
             if result.get("subtitles_muxed"):
@@ -217,6 +219,7 @@ def main():
                     "Download Movie by URL",
                     "Play Movie by URL",
                     "Download Subtitles Only by URL",
+                    "Shift / Sync Existing Subtitle File (.srt)",
                     "Exit"
                 ],
                 carousel=True
@@ -249,14 +252,21 @@ def main():
                 logger.error("Movie not found")
                 continue
 
+            time_offset = 0.0
             if "Subtitles Only" in action:
                 mode = "subtitle"
+                offset_inp = input("Enter subtitle sync offset in seconds (e.g. -1.2 to display earlier, 0.0 for original): ").strip()
+                if offset_inp:
+                    try:
+                        time_offset = float(offset_inp)
+                    except ValueError:
+                        logger.warning("Invalid offset number, using 0.0s")
             elif "Download" in action:
                 mode = "download"
             else:
                 mode = "play"
 
-            process_movie(idlix, selected["url"], mode)
+            process_movie(idlix, selected["url"], mode, time_offset=time_offset)
 
 
         elif action == "Download Movie by URL":
@@ -269,7 +279,30 @@ def main():
 
         elif action == "Download Subtitles Only by URL":
             url = input("Enter movie URL: ").strip()
-            process_movie(idlix, url, "subtitle")
+            offset_inp = input("Enter subtitle sync offset in seconds (e.g. -1.2 to display earlier, 0.0 for original): ").strip()
+            time_offset = 0.0
+            if offset_inp:
+                try:
+                    time_offset = float(offset_inp)
+                except ValueError:
+                    logger.warning("Invalid offset number, using 0.0s")
+            process_movie(idlix, url, "subtitle", time_offset=time_offset)
+
+        elif action == "Shift / Sync Existing Subtitle File (.srt)":
+            import os
+            srt_path = input("Enter path to existing .srt file: ").strip()
+            if os.path.exists(srt_path):
+                offset_inp = input("Enter offset in seconds (e.g. -1.2 to shift earlier, +1.5 to delay): ").strip()
+                try:
+                    offset_val = float(offset_inp)
+                    out_path = IdlixHelper.shift_srt_file(srt_path, offset_val)
+                    logger.success(f"Shifted subtitle saved successfully: {out_path}")
+                except ValueError:
+                    logger.error("Invalid offset number")
+                except Exception as e:
+                    logger.error(f"Error shifting subtitle: {e}")
+            else:
+                logger.error(f"File not found: {srt_path}")
 
         # Exit
         else:
