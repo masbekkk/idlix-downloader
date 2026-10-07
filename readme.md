@@ -26,6 +26,7 @@ Program mendukung Windows dan Linux.
 | Download Movie by URL   | Mengunduh film berdasarkan URL                                     | ✔      |
 | Select Resolution       | Memilih resolusi (variant playlist)                                | ✔      |
 | Subtitle Support        | Download dan load subtitle otomatis                                | ✔      |
+| Download Subtitle Only  | Opsi download subtitle saja (.srt) tanpa mengunduh video           | ✔      |
 | FFplay Integration      | Pemutaran video stabil                                              | ✔      |
 | Stop Player Feature     | Menghentikan ffplay                                                 | ✔      |
 | Download Folder Button  | Membuka folder hasil download                                       | ✔      |
@@ -66,14 +67,15 @@ python main.py
 # Cara Penggunaan (GUI)
 
 1. GUI akan menampilkan poster film dari homepage IDLIX.
-2. Klik poster → Play atau Download.
+2. Klik poster → Play, Download Video, atau Download Subtitles Only.
 3. Tersedia tombol:
    - Play by URL
    - Download by URL
+   - Download Subtitle by URL
    - Stop Player
    - Open Downloads Folder
    - Clear Log
-4. Subtitle otomatis didownload dan dikonversi.
+4. Subtitle otomatis didownload dan dikonversi ke format .srt.
 5. Player menggunakan ffplay.
 
 ------------------------------------------------------------
@@ -93,9 +95,11 @@ Menu CLI:
 
 1. Download Featured Movie
 2. Play Featured Movie
-3. Download Movie by URL
-4. Play Movie by URL
-5. Exit
+3. Download Subtitles Only (Featured)
+4. Download Movie by URL
+5. Play Movie by URL
+6. Download Subtitles Only by URL
+7. Exit
 
 Dengan retry logic dan output tabel PrettyTable.
 

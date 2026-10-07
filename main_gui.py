@@ -96,6 +96,7 @@ class IdlixGUI:
         ttk.Button(right_panel, text="Refresh Featured", command=self.refresh_featured).pack(fill="x", pady=4)
         ttk.Button(right_panel, text="Download by URL", command=self.download_by_url).pack(fill="x", pady=4)
         ttk.Button(right_panel, text="Play by URL", command=self.play_by_url).pack(fill="x", pady=4)
+        ttk.Button(right_panel, text="Download Subtitle by URL", command=self.download_subtitle_by_url).pack(fill="x", pady=4)
         ttk.Button(right_panel, text="Stop Player", command=self.stop_player).pack(fill="x", pady=4)
         ttk.Button(right_panel, text="Open Downloads Folder", command=self.open_download_folder).pack(fill="x", pady=4)
         ttk.Button(right_panel, text="Clear Log", command=self.clear_log).pack(fill="x", pady=4)
@@ -163,25 +164,32 @@ class IdlixGUI:
     def on_poster_click(self, movie):
         popup = tk.Toplevel(self.root)
         popup.title(movie["title"])
-        popup.geometry("350x220")
+        popup.geometry("350x260")
 
         ttk.Label(popup, text=movie["title"], font=("Arial", 12, "bold")).pack(pady=10)
 
         ttk.Button(
             popup,
             text="Play",
-            width=20,
+            width=22,
             command=lambda: [popup.destroy(), self.process_movie(movie["url"], "play")]
-        ).pack(pady=5)
+        ).pack(pady=4)
 
         ttk.Button(
             popup,
-            text="Download",
-            width=20,
+            text="Download Video",
+            width=22,
             command=lambda: [popup.destroy(), self.process_movie(movie["url"], "download")]
-        ).pack(pady=5)
+        ).pack(pady=4)
 
-        ttk.Button(popup, text="Cancel", width=20, command=popup.destroy).pack(pady=10)
+        ttk.Button(
+            popup,
+            text="Download Subtitles Only",
+            width=22,
+            command=lambda: [popup.destroy(), self.process_movie(movie["url"], "subtitle")]
+        ).pack(pady=4)
+
+        ttk.Button(popup, text="Cancel", width=22, command=popup.destroy).pack(pady=8)
 
     # Variant selector
     def ask_variant(self, choices):
@@ -266,6 +274,11 @@ class IdlixGUI:
         if url:
             self.process_movie(url.strip(), "play")
 
+    def download_subtitle_by_url(self):
+        url = simpledialog.askstring("Download Subtitles", "Enter Movie or Series Episode URL:")
+        if url:
+            self.process_movie(url.strip(), "subtitle")
+
     # ============================================================
     # CORE PROCESS (100% same as CLI)
     # ============================================================
@@ -346,6 +359,18 @@ class IdlixGUI:
                 return
 
             logger.success(f"Embed: {embed['embed_url']}")
+
+            # SUBTITLE ONLY
+            if mode == "subtitle":
+                logger.info(f"Downloading subtitles for {video_data['video_name']}...")
+                subs = idlix.get_subtitles(download=True)
+                if subs:
+                    logger.success(f"Downloaded {len(subs)} subtitle file(s) (.srt):")
+                    for sub in subs:
+                        logger.info(f" - [{sub.get('label', sub.get('lang'))}] {sub.get('srt_path')}")
+                else:
+                    logger.warning("No subtitles available for this title.")
+                return
 
             # 3. m3u8
             m3u8 = retry(idlix.get_m3u8_url)

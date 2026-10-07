@@ -96,6 +96,18 @@ def process_movie(idlix_helper, url: str, mode: str):
 
     logger.success(f"Getting embed URL: {embed['embed_url']}")
 
+    # If subtitle only mode → download subtitles and return immediately
+    if mode == "subtitle":
+        logger.info(f"Downloading subtitles for {video_data['video_name']}...")
+        subs = idlix_helper.get_subtitles(download=True)
+        if subs:
+            logger.success(f"Downloaded {len(subs)} subtitle file(s) (.srt):")
+            for sub in subs:
+                logger.info(f" - [{sub.get('label', sub.get('lang'))}] {sub.get('srt_path')}")
+        else:
+            logger.warning("No subtitles available for this movie/episode.")
+        return
+
     m3u8 = retry(idlix_helper.get_m3u8_url)
     if not m3u8.get("status"):
         logger.error("Error getting M3U8 URL")
@@ -201,8 +213,10 @@ def main():
                 choices=[
                     "Download Featured Movie",
                     "Play Featured Movie",
+                    "Download Subtitles Only (Featured)",
                     "Download Movie by URL",
                     "Play Movie by URL",
+                    "Download Subtitles Only by URL",
                     "Exit"
                 ],
                 carousel=True
@@ -210,7 +224,11 @@ def main():
         ]
         answer = inquirer.prompt(question)
         action = answer["action"]
-        if action in ["Download Featured Movie", "Play Featured Movie"]:
+        if action in [
+            "Download Featured Movie",
+            "Play Featured Movie",
+            "Download Subtitles Only (Featured)"
+        ]:
             # Select movie
             movie_question = [
                 inquirer.List(
@@ -231,7 +249,13 @@ def main():
                 logger.error("Movie not found")
                 continue
 
-            mode = "download" if "Download" in action else "play"
+            if "Subtitles Only" in action:
+                mode = "subtitle"
+            elif "Download" in action:
+                mode = "download"
+            else:
+                mode = "play"
+
             process_movie(idlix, selected["url"], mode)
 
 
@@ -242,6 +266,10 @@ def main():
         elif action == "Play Movie by URL":
             url = input("Enter movie URL: ").strip()
             process_movie(idlix, url, "play")
+
+        elif action == "Download Subtitles Only by URL":
+            url = input("Enter movie URL: ").strip()
+            process_movie(idlix, url, "subtitle")
 
         # Exit
         else:
