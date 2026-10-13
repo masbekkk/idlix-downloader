@@ -517,6 +517,124 @@ class IdlixHelper:
         self.m3u8_url = m3u8_url
 
     @staticmethod
+    def parse_episode_selection(input_str: str, available_episodes: list = None) -> list:
+        """
+        Parses episode selection string into a sorted list of unique episode numbers.
+        Supports:
+          - "all" / "*" -> all available episodes
+          - Comma-separated: "1, 3, 5"
+          - Ranges: "1-5" -> 1, 2, 3, 4, 5
+          - Mixed: "1-3, 5, 8-10"
+        If available_episodes is provided (as list of ints or list of episode dicts),
+        it validates and filters against available episodes.
+        """
+        avail_nums = []
+        if available_episodes:
+            for item in available_episodes:
+                if isinstance(item, dict):
+                    num = item.get("episodeNumber")
+                    if num is not None:
+                        avail_nums.append(int(num))
+                elif isinstance(item, (int, str)) and str(item).isdigit():
+                    avail_nums.append(int(item))
+
+        cleaned = (input_str or "").strip().lower()
+        if not cleaned:
+            return sorted(list(set(avail_nums))) if avail_nums else []
+
+        if cleaned in ("all", "*"):
+            return sorted(list(set(avail_nums))) if avail_nums else []
+
+        selected = set()
+        parts = [p.strip() for p in cleaned.split(",") if p.strip()]
+        for part in parts:
+            if "-" in part:
+                tokens = [t.strip() for t in part.split("-") if t.strip()]
+                if len(tokens) == 2 and tokens[0].isdigit() and tokens[1].isdigit():
+                    start_ep = int(tokens[0])
+                    end_ep = int(tokens[1])
+                    step = 1 if start_ep <= end_ep else -1
+                    for ep in range(start_ep, end_ep + step, step):
+                        selected.add(ep)
+                else:
+                    raise ValueError(f"Invalid range format: '{part}'")
+            elif part.isdigit():
+                selected.add(int(part))
+            else:
+                raise ValueError(f"Invalid episode number: '{part}'")
+
+        result = sorted(list(selected))
+        if avail_nums:
+            avail_set = set(avail_nums)
+            result = [ep for ep in result if ep in avail_set]
+
+        return result
+
+    @staticmethod
+    def select_best_variant(variant_playlist: list, target_pref: str) -> tuple:
+        """
+        Selects the best matching variant from variant_playlist given target_pref.
+        target_pref can be:
+          - "best" or "highest" -> returns highest bandwidth variant
+          - Resolution string like "1920x1080", "1080p", "720p", "480p"
+          - Variant ID or label string
+        Returns:
+          tuple (selected_variant_dict, is_exact_match: bool)
+        """
+        if not variant_playlist:
+            return None, False
+
+        if not target_pref or str(target_pref).strip().lower() in ("best", "highest", "auto"):
+            return variant_playlist[0], True
+
+        target_str = str(target_pref).strip().lower()
+
+        # 1. Exact match on resolution label or ID
+        for v in variant_playlist:
+            v_res = str(v.get("resolution", "")).lower()
+            v_id = str(v.get("id", "")).lower()
+            if target_str == v_res or target_str == v_id or target_str == f"{v_id} - {v_res}":
+                return v, True
+
+        # 2. Extract target height (e.g. 1080 from "1080p" or "1920x1080")
+        target_height = None
+        match_h = re.search(r'(\d{3,4})p?', target_str)
+        if match_h:
+            target_height = int(match_h.group(1))
+
+        # Helper to extract height from variant
+        def get_variant_height(v):
+            res_str = str(v.get("resolution", ""))
+            m_res = re.search(r'x(\d+)', res_str)
+            if m_res:
+                return int(m_res.group(1))
+            m_any = re.search(r'(\d{3,4})', res_str)
+            if m_any:
+                return int(m_any.group(1))
+            return 0
+
+        # Match by height
+        if target_height:
+            for v in variant_playlist:
+                if get_variant_height(v) == target_height:
+                    return v, True
+
+            # Fallback (Option A): pick next highest available quality <= target_height
+            lower_candidates = [v for v in variant_playlist if 0 < get_variant_height(v) <= target_height]
+            if lower_candidates:
+                best_lower = max(lower_candidates, key=get_variant_height)
+                return best_lower, False
+
+            # If all are higher or height unknown, pick closest by height
+            candidates_with_height = [v for v in variant_playlist if get_variant_height(v) > 0]
+            if candidates_with_height:
+                best_closest = min(candidates_with_height, key=lambda v: abs(get_variant_height(v) - target_height))
+                return best_closest, False
+
+        # Default fallback: highest quality
+        return variant_playlist[0], False
+
+    @staticmethod
     def get_iso_lang(lang: str) -> str:
         """Map language code to ISO 639-2 3-letter code for FFmpeg metadata"""
         lang = (lang or "").lower().strip()

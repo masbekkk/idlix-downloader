@@ -24,6 +24,8 @@ Program mendukung Windows dan Linux.
 | Download Featured Movie | Mengunduh film dari featured                                       | ✔      |
 | Play Movie by URL       | Memutar film berdasarkan URL                                       | ✔      |
 | Download Movie by URL   | Mengunduh film berdasarkan URL                                     | ✔      |
+| TV Series Batch Download| Download 1 Season penuh atau multiple episode (rentang 1-5, dll)   | ✔      |
+| Global Quality Preset   | Kualitas/resolusi diset 1x untuk seluruh episode dalam batch       | ✔      |
 | Select Resolution       | Memilih resolusi (variant playlist)                                | ✔      |
 | Subtitle Support        | Download dan load subtitle otomatis                                | ✔      |
 | Download Subtitle Only  | Opsi download subtitle saja (.srt) tanpa mengunduh video           | ✔      |
@@ -131,7 +133,7 @@ Program akan otomatis:
 
 # Roadmap
 
-- Support TV series / episode
+- Support TV series / episode (Whole Season & Multi-Episode Batch Download) ✔
 - Search movie (GUI)
 - History (watch & download)
 - Dark/Light Theme
@@ -141,6 +143,16 @@ Program akan otomatis:
 ------------------------------------------------------------
 
 # Changelog
+
+2026-10-07 — SERIES BATCH DOWNLOAD UPDATE
+-----------------------------------------
+Added:
+- Download Whole Season (1 season penuh otomatis) untuk CLI dan GUI
+- Download Multiple Episodes via rentang (misal `1-5`, `1,3,5`) atau checklist GUI
+- Global Video Quality Preset: Kualitas video diset cukup 1x di awal untuk seluruh batch
+- Smart quality fallback: Otomatis memilih kualitas terbaik berikutnya jika resolusi spesifik tidak tersedia pada episode tertentu
+- Penataan folder terstruktur per series dan season (`downloads/{Series}/Season {N}/`)
+- Tabel ringkasan batch download (Success / Failed count & report)
 
 2025-11-28 — BIG UPDATE
 -----------------------

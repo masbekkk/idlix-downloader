@@ -3,6 +3,7 @@ from tkinter import ttk, messagebox, simpledialog
 import threading
 import subprocess
 import os
+import re
 import time
 import webbrowser
 from io import BytesIO
@@ -211,16 +212,18 @@ class IdlixGUI:
     def ask_variant(self, choices):
         popup = tk.Toplevel(self.root)
         popup.title("Select Resolution")
-        popup.geometry("300x350")
+        popup.geometry("320x360")
 
-        ttk.Label(popup, text="Select Variant", font=("Arial", 12, "bold")).pack(pady=10)
+        ttk.Label(popup, text="Select Video Quality", font=("Arial", 11, "bold")).pack(pady=10)
 
-        listbox = tk.Listbox(popup, width=30, height=12)
+        listbox = tk.Listbox(popup, width=32, height=12)
         for c in choices:
             listbox.insert(tk.END, c)
-        listbox.pack()
+        if choices:
+            listbox.selection_set(0)
+        listbox.pack(padx=10, pady=5)
 
-        result = {"res": None}
+        result = {"res": choices[0] if choices else None}
 
         def choose():
             sel = listbox.curselection()
@@ -257,6 +260,92 @@ class IdlixGUI:
         popup.grab_set()
         self.root.wait_window(popup)
         return result["val"]
+
+    def ask_episodes_selection(self, title: str, prompt: str, episodes: list) -> list:
+        popup = tk.Toplevel(self.root)
+        popup.title(title)
+        popup.geometry("500x480")
+        popup.minsize(440, 400)
+
+        ttk.Label(popup, text=prompt, font=("Arial", 11, "bold")).pack(pady=8)
+
+        # Quick action buttons bar
+        btn_bar = ttk.Frame(popup)
+        btn_bar.pack(fill="x", padx=15, pady=4)
+
+        # Multi-select listbox with scrollbar
+        list_frame = ttk.Frame(popup)
+        list_frame.pack(fill="both", expand=True, padx=15, pady=5)
+
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical")
+        listbox = tk.Listbox(list_frame, selectmode=tk.EXTENDED, yscrollcommand=scrollbar.set, font=("Arial", 10))
+        scrollbar.config(command=listbox.yview)
+        scrollbar.pack(side="right", fill="y")
+        listbox.pack(side="left", fill="both", expand=True)
+
+        ep_map = {}
+        for idx, e in enumerate(episodes):
+            ep_num = e.get("episodeNumber", idx + 1)
+            ep_name = e.get("name", f"Episode {ep_num}")
+            display = f"Ep {ep_num}: {ep_name}"
+            listbox.insert(tk.END, display)
+            ep_map[idx] = ep_num
+
+        def select_all():
+            listbox.select_set(0, tk.END)
+
+        def deselect_all():
+            listbox.select_clear(0, tk.END)
+
+        ttk.Button(btn_bar, text="Select All (Whole Season)", command=select_all).pack(side="left", padx=4)
+        ttk.Button(btn_bar, text="Clear All", command=deselect_all).pack(side="left", padx=4)
+
+        # Range entry frame
+        range_frame = ttk.Frame(popup)
+        range_frame.pack(fill="x", padx=15, pady=6)
+        ttk.Label(range_frame, text="Or Range (e.g. 1-5, 8):").pack(side="left", padx=4)
+        range_entry = ttk.Entry(range_frame, width=18)
+        range_entry.pack(side="left", padx=4)
+
+        def apply_range():
+            val = range_entry.get().strip()
+            if val:
+                try:
+                    parsed = IdlixHelper.parse_episode_selection(val, episodes)
+                    deselect_all()
+                    for i, e in enumerate(episodes):
+                        if e.get("episodeNumber") in parsed:
+                            listbox.select_set(i)
+                except Exception as ex:
+                    messagebox.showwarning("Invalid Range", str(ex), parent=popup)
+
+        ttk.Button(range_frame, text="Apply Range", command=apply_range).pack(side="left", padx=4)
+
+        result = {"episodes": []}
+
+        def confirm():
+            sel_indices = listbox.curselection()
+            if not sel_indices:
+                messagebox.showwarning("Selection Required", "Please select at least one episode.", parent=popup)
+                return
+            result["episodes"] = [ep_map[i] for i in sel_indices if i in ep_map]
+            popup.destroy()
+
+        def cancel():
+            result["episodes"] = []
+            popup.destroy()
+
+        bottom_frame = ttk.Frame(popup)
+        bottom_frame.pack(fill="x", padx=15, pady=10)
+        ttk.Button(bottom_frame, text="Confirm & Proceed", command=confirm).pack(side="right", padx=8)
+        ttk.Button(bottom_frame, text="Cancel", command=cancel).pack(side="right", padx=4)
+
+        # Pre-select all by default for convenient 1-click Whole Season download
+        select_all()
+
+        popup.grab_set()
+        self.root.wait_window(popup)
+        return result["episodes"]
 
     # ============================================================
     # REFRESH FEATURED LIST
@@ -343,7 +432,7 @@ class IdlixGUI:
                 logger.error("Error getting video data")
                 return
 
-            # Handle TV series root URL (prompt for Season and Episode)
+            # Handle TV series root URL (prompt for Season and Episode/Batch)
             if video_data.get("is_series"):
                 seasons = video_data.get("seasons", [])
                 if not seasons:
@@ -355,15 +444,18 @@ class IdlixGUI:
                     for i, s in enumerate(seasons)
                 ]
 
+                s_event = threading.Event()
                 selected_season_str = None
 
                 def ask_s():
                     nonlocal selected_season_str
                     selected_season_str = self.ask_selection("Select Season", f"Choose Season for {video_data.get('series_title')}:", season_choices)
+                    s_event.set()
 
                 self.root.after(0, ask_s)
-                while selected_season_str is None:
-                    self.root.update()
+                s_event.wait()
+                if not selected_season_str:
+                    return
 
                 s_idx = season_choices.index(selected_season_str)
                 season_num = seasons[s_idx].get("seasonNumber", s_idx + 1)
@@ -375,27 +467,192 @@ class IdlixGUI:
                     logger.error(f"No episodes found for Season {season_num}")
                     return
 
-                ep_choices = [
-                    f"Ep {e.get('episodeNumber')}: {e.get('name', 'Episode ' + str(e.get('episodeNumber')))}"
-                    for e in episodes
-                ]
+                # If Play mode -> Single episode selection
+                if mode == "play":
+                    ep_choices = [
+                        f"Ep {e.get('episodeNumber')}: {e.get('name', 'Episode ' + str(e.get('episodeNumber')))}"
+                        for e in episodes
+                    ]
 
-                selected_ep_str = None
+                    e_event = threading.Event()
+                    selected_ep_str = None
 
-                def ask_e():
-                    nonlocal selected_ep_str
-                    selected_ep_str = self.ask_selection("Select Episode", f"Choose Episode (Season {season_num}):", ep_choices)
+                    def ask_e():
+                        nonlocal selected_ep_str
+                        selected_ep_str = self.ask_selection("Select Episode", f"Choose Episode to Play (Season {season_num}):", ep_choices)
+                        e_event.set()
 
-                self.root.after(0, ask_e)
-                while selected_ep_str is None:
-                    self.root.update()
+                    self.root.after(0, ask_e)
+                    e_event.wait()
+                    if not selected_ep_str:
+                        return
 
-                e_idx = ep_choices.index(selected_ep_str)
-                ep_num = episodes[e_idx].get("episodeNumber")
+                    e_idx = ep_choices.index(selected_ep_str)
+                    ep_num = episodes[e_idx].get("episodeNumber")
 
-                video_data = idlix.get_episode_data(video_data["slug"], season_num, ep_num)
-                if not video_data.get("status"):
-                    logger.error("Failed to load episode.")
+                    video_data = idlix.get_episode_data(video_data["slug"], season_num, ep_num)
+                    if not video_data.get("status"):
+                        logger.error("Failed to load episode.")
+                        return
+                else:
+                    # Download or Subtitle mode -> Multi-episode / Whole Season Batch flow
+                    ep_event = threading.Event()
+                    selected_episodes = []
+
+                    def ask_eps():
+                        nonlocal selected_episodes
+                        selected_episodes = self.ask_episodes_selection(
+                            "Select Episodes to Download",
+                            f"Select Episodes for {video_data.get('series_title')} (Season {season_num}):",
+                            episodes
+                        )
+                        ep_event.set()
+
+                    self.root.after(0, ask_eps)
+                    ep_event.wait()
+
+                    if not selected_episodes:
+                        logger.warning("Episode selection cancelled.")
+                        return
+
+                    safe_series_title = re.sub(r'[\\/*?:"<>|]', '', video_data.get("series_title") or video_data.get("slug", "Series")).strip()
+                    output_dir = os.path.join(os.getcwd(), "downloads", safe_series_title, f"Season {season_num}")
+                    os.makedirs(output_dir, exist_ok=True)
+                    logger.info(f"Target download folder: {output_dir}")
+
+                    total_eps = len(selected_episodes)
+                    selected_quality_pref = "best"
+                    probe_helper = None
+                    probe_data = None
+                    probe_m3u8 = None
+
+                    # Set quality ONCE for all episodes in the batch
+                    if mode == "download":
+                        first_ep = selected_episodes[0]
+                        logger.info(f"Probing video stream quality using Episode {first_ep}...")
+                        probe_helper = IdlixHelper()
+                        probe_data = retry(probe_helper.get_episode_data, video_data["slug"], season_num, first_ep)
+                        if not probe_data.get("status"):
+                            logger.error(f"Failed to probe stream quality: {probe_data.get('message')}")
+                            return
+
+                        probe_embed = retry(probe_helper.get_embed_url)
+                        if not probe_embed.get("status"):
+                            logger.error("Failed to unlock stream for quality probing")
+                            return
+
+                        probe_m3u8 = retry(probe_helper.get_m3u8_url)
+                        if probe_m3u8.get("status") and probe_m3u8.get("is_variant_playlist"):
+                            choices = ["Auto - Best Available (Highest Quality)"] + [
+                                f"{v['id']} - {v['resolution']}" for v in probe_m3u8["variant_playlist"]
+                            ]
+
+                            q_event = threading.Event()
+                            chosen_variant_str = None
+
+                            def ask_q():
+                                nonlocal chosen_variant_str
+                                chosen_variant_str = self.ask_variant(choices)
+                                q_event.set()
+
+                            self.root.after(0, ask_q)
+                            q_event.wait()
+
+                            if not chosen_variant_str:
+                                logger.warning("Quality selection cancelled.")
+                                return
+
+                            if chosen_variant_str.startswith("Auto"):
+                                selected_quality_pref = "best"
+                                logger.success("Quality format set to: Best Available (Auto)")
+                            else:
+                                selected_quality_pref = chosen_variant_str.split(" - ")[1].strip()
+                                logger.success(f"Quality format set to: {selected_quality_pref} (applied to all {total_eps} episodes)")
+                        else:
+                            logger.info("Video has single quality stream. Default quality will be used for all episodes.")
+
+                    # Run sequential batch execution
+                    logger.info(f"Starting batch download of {total_eps} episode(s)...")
+                    succeeded = 0
+                    failed = 0
+
+                    for idx, ep_num in enumerate(selected_episodes, 1):
+                        logger.info("-" * 60)
+                        logger.info(f"[{idx}/{total_eps}] Processing Season {season_num} Episode {ep_num}...")
+                        logger.info("-" * 60)
+
+                        if idx == 1 and probe_helper and probe_helper.m3u8_url and mode == "download":
+                            ep_helper = probe_helper
+                            ep_data = probe_data
+                            m3u8 = probe_m3u8
+                        else:
+                            ep_helper = IdlixHelper()
+                            ep_data = retry(ep_helper.get_episode_data, video_data["slug"], season_num, ep_num)
+                            if not ep_data.get("status"):
+                                logger.error(f"Error loading Episode {ep_num}: {ep_data.get('message')}")
+                                failed += 1
+                                continue
+
+                            embed = retry(ep_helper.get_embed_url)
+                            if not embed.get("status"):
+                                logger.error(f"Error unlocking stream for Episode {ep_num}")
+                                failed += 1
+                                continue
+
+                            m3u8 = retry(ep_helper.get_m3u8_url)
+                            if not m3u8.get("status") and mode == "download":
+                                logger.error(f"Error getting M3U8 for Episode {ep_num}")
+                                failed += 1
+                                continue
+
+                        if mode == "download":
+                            current_res = "Default"
+                            if m3u8.get("is_variant_playlist"):
+                                best_v, is_exact = IdlixHelper.select_best_variant(m3u8["variant_playlist"], selected_quality_pref)
+                                if best_v:
+                                    ep_helper.set_m3u8_url(best_v["uri"])
+                                    current_res = best_v.get("resolution", "-")
+                                    if not is_exact and selected_quality_pref != "best":
+                                        logger.warning(
+                                            f"Target quality '{selected_quality_pref}' unavailable for Ep {ep_num}. "
+                                            f"Falling back to {current_res}"
+                                        )
+                                    else:
+                                        logger.success(f"Quality applied for Ep {ep_num}: {current_res}")
+
+                            logger.info(f"Downloading {ep_data['video_name']} (with subtitles)...")
+                            res_dl = ep_helper.download_m3u8(output_dir=output_dir, time_offset=time_offset)
+                            if res_dl.get("status"):
+                                logger.success(f"Downloaded Ep {ep_num}: {res_dl.get('path')}")
+                                succeeded += 1
+                            else:
+                                logger.error(f"Download failed Ep {ep_num}: {res_dl.get('message')}")
+                                failed += 1
+                        elif mode == "subtitle":
+                            logger.info(f"Downloading subtitles for {ep_data['video_name']}...")
+                            subs = ep_helper.get_subtitles(download=True, output_dir=output_dir, time_offset=time_offset)
+                            if subs:
+                                logger.success(f"Downloaded {len(subs)} subtitle(s) for Ep {ep_num}")
+                                succeeded += 1
+                            else:
+                                logger.warning(f"No subtitles available for Ep {ep_num}")
+                                failed += 1
+
+                    logger.info("=" * 60)
+                    logger.info(f"BATCH FINISHED: {succeeded} Succeeded, {failed} Failed")
+                    logger.info(f"Folder: {output_dir}")
+                    logger.info("=" * 60)
+
+                    def show_batch_done():
+                        messagebox.showinfo(
+                            "Batch Download Complete",
+                            f"Batch download finished for Season {season_num}!\n\n"
+                            f"Succeeded: {succeeded}\n"
+                            f"Failed: {failed}\n\n"
+                            f"Saved to: {output_dir}"
+                        )
+
+                    self.root.after(0, show_batch_done)
                     return
 
             logger.info(
